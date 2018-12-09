@@ -1,6 +1,6 @@
+#! python3
 import os
 import redis
-# import urlparse
 from urllib.parse import urlparse
 from werkzeug.wrappers import Request, Response
 from werkzeug.routing import Map, Rule
@@ -10,15 +10,13 @@ from werkzeug.utils import redirect
 from jinja2 import Environment, FileSystemLoader
 
 class Shortly(object):
-
     def __init__(self, config):
         # redisの設定
         self.redis = redis.Redis(config['redis_host'], config['redis_port'])
         # templatesのパスを取得
         template_path = os.path.join(os.path.dirname(__file__), 'templates')
         # Jinja2にtemplatesのパスを教えてあげる
-        self.jinja_env = Environment(lodaer=FileSystemLoader(template_path), autoescape=True)
-
+        self.jinja_env = Environment(loader=FileSystemLoader(template_path), autoescape=True)
         # ルーティング
         self.url_map = Map([
             Rule('/', endpoint='new_url'),
@@ -26,28 +24,29 @@ class Shortly(object):
             Rule('/<short_id>+', endpoint='short_link_details')
         ])
 
-    # テンプレートをレンダリングするメソッド
-    def render_template(self, template_nama, **context):
-        # __init__で指定したディレクトリから、template_nameにあたるファイルのパスを取得
-        t = self.jinja_env.get_template(template_name) 
-        # レンダリングして返す
-        return Response(t.render(context), mimetype='text/html')
-
     def dispatch_request(self, request):
         adapter = self.url_map.bind_to_environ(request.environ)
         try:
             endpoint, values = adapter.match()
             return getattr(self, 'on_' + endpoint)(request, **values)
-        except HTTPException, e:
+        except HTTPException as e:
             return e
-
-        return Response('Hello World!')
 
     def wsgi_app(self, environ, start_response):
         request = Request(environ)
         response = self.dispatch_request(request)
         return response(environ, start_response)
 
+    # テンプレートをレンダリングするメソッド
+    def render_template(self, template_name, **context):
+        # __init__で指定したディレクトリから、template_nameにあたるファイルのパスを取得
+        t = self.jinja_env.get_template(template_name)
+        # 該当するhtmlをレンダリングして返す
+        return Response(t.render(context), mimetype='text/html')
+
+    def __call__(self, environ, start_response):
+        return self.wsgi_app(environ, start_response)
+    
     def on_new_url(self, request):
         error = None
         url = ''
@@ -57,8 +56,8 @@ class Shortly(object):
                 error = 'Please enter a valid URL'
             else:
                 short_id = self.insert_url(url)
-                return redirect('%s+'%short_id)
-            return self.render_template('new_url.html', error=error, url=url)
+                return redirect('%s+'%short_id.decode(encoding="utf-8"))
+        return self.render_template('new_url.html', error=error, url=url)
 
     def insert_url(self, url):
         short_id = self.redis.get('reverse-url:' + url)
@@ -77,8 +76,16 @@ class Shortly(object):
         self.redis.incr('click-count:' + short_id)
         return redirect(link_target)
 
-    def __call__(self, environ, start_response):
-        return self.wsgi_app(environ, start_response)
+    def on_short_link_details(self, request, short_id):
+        link_target = self.redis.get('url-target:' + short_id)
+        if link_target is None:
+            raise NotFound()
+        click_count = int(self.redis.get('click-count:' + short_id) or 0)
+        return self.render_template('short_link_details.html',
+        link_target=link_target,
+        short_id=short_id,
+        click_count=click_count
+        )
 
 
 def create_app(redis_host='localhost', redis_port=6379, with_static=True):
@@ -94,7 +101,7 @@ def create_app(redis_host='localhost', redis_port=6379, with_static=True):
 
 
 def is_valid_url(url):
-    parts = urlparse.urlparse(url)
+    parts = urlparse(url) #pytjon3
     return parts.scheme in ('http', 'https')
 
 
@@ -111,4 +118,4 @@ def base36_encode(number):
 if __name__ == '__main__':
     from werkzeug.serving import run_simple
     app = create_app()
-    run_simple('127.0.0.1', 5000, app, use_debugger=True, use_reloader=True)
+    run_simple('localhost', 4000, app, use_debugger=True, use_reloader=True)
